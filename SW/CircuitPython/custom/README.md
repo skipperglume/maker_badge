@@ -24,4 +24,4 @@ You should for something like: `/dev/ttyACM0`, with recent time of creation.
 ### Command to move a new script:
 
     scp code.py /media/lofu/CIRCUITPY/code.py
-    scp logo.bmp /media/lofu/CIRCUITPY/logo.bmp
+    scp qr.bmp /media/lofu/CIRCUITPY/

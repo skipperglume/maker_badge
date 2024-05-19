@@ -141,6 +141,9 @@ def displayQR():
     
     display_data.append(qr_tile)
 
+    _addText('Wearer\'s', 2, display_black, 130, 20)
+    _addText('CV', 3, display_black, 130, 60)
+
     display.show(display_data)
     display.refresh()
     time.sleep(1)
@@ -220,7 +223,7 @@ display = adafruit_ssd1680.SSD1680(
     height = display_height, # The width and height values can be adjusted to match the physical display
     rotation = 270, # The rotation can be adjusted to match the physical orientation of the display
     busy_pin = board_epd_busy, #
-    seconds_per_frame=10,
+    seconds_per_frame=5,
     # time_to_refresh=1,
 )
 
@@ -268,6 +271,8 @@ startingDisplay(3)
 #     display.show(display_data)
 #     display.refresh()
 
+
+
 enable_display.value = False
 # MAIN LOOP
 while True:
@@ -287,20 +292,16 @@ while True:
         # Set LED to red
         led_matrix.fill(led_red)
         led_matrix.show()
-        
         if display.time_to_refresh == 0.0:
             displayVoltage()
             time.sleep(1)
             printm(f'Size of display_data: {len(display_data)}')
         
-        time.sleep(1)
     if touch_3.value:
         # Set LED to green
         led_matrix.fill(led_green)
         led_matrix.show()
-
         if display.time_to_refresh == 0.0:
-            
             displayQR()
             time.sleep(1)
             printm(f'Size of display_data: {len(display_data)}')
@@ -311,18 +312,15 @@ while True:
         led_matrix.show()
         
         if display.time_to_refresh == 0.0:
-            
             displayFigure()
             time.sleep(1)
             printm(f'Size of display_data: {len(display_data)}')
         
     if touch_5.value:
-        # Turn off the LED
+        # Set LED to purple
         led_matrix.fill(led_purple)
         led_matrix.show()
-        # printBatteryState(get_batery_State)
-        # display_data.append(displayio.TileGrid(display_background, pixel_shader = display_color_palette))
-        # printMakerDescription('Denys', 'Timoshyn', '')
+        
     
     printm(f'{display.time_to_refresh}')
     if display.busy:
