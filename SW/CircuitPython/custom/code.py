@@ -33,13 +33,13 @@ def printm(text):
     print(f"RAM {gc.mem_free()} B:\t{text}")
 
 # Function for append text to the display data
-def _addText(text, scale, color, x_cord, y_cord):
+def addText(text:str, scale, color, x_cord:float, y_cord:float):
     group = displayio.Group(scale = scale, x = x_cord, y = y_cord)
     text_label = label.Label(terminalio.FONT, text = text, color = color)
     group.append(text_label)
     display_data.append(group)
 
-def get_batery_State():
+def getBateryState()->dict:
     coeff = 2 # Coefficient for voltage divider
     battery_en.value = False # The transistor turns on the voltage divider circuit by setting the battery_en pin to a low state
     raw = battery_adc.value # Get the value  /A/D
@@ -60,9 +60,9 @@ def displayMakerDescription(name, surname, company):
     display_data.append(background)
 
     # Append text to the display data
-    _addText(name, 3, display_black, 70, 20)
-    _addText(surname, 3, display_black, 50, 60)
-    _addText(company, 2, display_black, 20, 100)
+    addText(name, 3, display_black, 70, 20)
+    addText(surname, 3, display_black, 50, 60)
+    addText(company, 2, display_black, 20, 100)
     display.show(display_data)
     display.refresh()
     time.sleep(1)
@@ -77,12 +77,12 @@ def displayVoltage():
     # Append tilegrid with the background to the display data
     display_data.append(background)
 
-    readOff = get_batery_State()
+    readOff = getBateryState()
 
     # Append text to the display data
-    _addText('Battery status:', 2, display_black, 20, 20)
-    _addText(f'Voltage: {readOff['voltage']} V', 2, display_black, 20, 60)
-    _addText(f'Raw: {readOff['raw']}', 2, display_black, 20, 100)
+    addText('Battery status:', 2, display_black, 20, 20)
+    addText(f'Voltage: {readOff['voltage']} V', 2, display_black, 20, 60)
+    addText(f'Raw: {readOff['raw']}', 2, display_black, 20, 100)
     display.show(display_data)
     display.refresh()
     time.sleep(1)
@@ -148,8 +148,8 @@ def displayQR():
     
     display_data.append(qr_tile)
 
-    _addText('Wearer\'s', 2, display_black, 130, 20)
-    _addText('CV', 3, display_black, 130, 60)
+    addText('Wearer\'s', 2, display_black, 130, 20)
+    addText('CV', 3, display_black, 130, 60)
 
     display.show(display_data)
     display.refresh()
@@ -160,8 +160,8 @@ def printBatteryState(func):
     Method for printing the namecard to the ePaper display
     '''
     data = func()
-    _addText(f'Voltage: {data['voltage']}', 3, display_black, 70, 20)
-    _addText(f'Raw: {data['raw']}', 3, display_black, 50, 60)
+    addText(f'Voltage: {data['voltage']}', 3, display_black, 70, 20)
+    addText(f'Raw: {data['raw']}', 3, display_black, 50, 60)
     display.show(display_data)
     display.refresh()
     time.sleep(1)
@@ -182,7 +182,7 @@ board_epd_busy = board.D42 # Busy signal from display controller
 battery_en = digitalio.DigitalInOut(board.D14)
 battery_en.direction = digitalio.Direction.OUTPUT
 battery_adc = analogio.AnalogIn(board.D6)
-get_batery_State() 
+getBateryState() 
 
 # Define touch buttons
 touch_threshold = 20000 # Adjust this value to be higher or lower depending on your touch sensitivity
@@ -285,7 +285,7 @@ enable_display.value = False
 while True:
     # color = [0,0,0]
     printm('')
-    printm(f'{get_batery_State()}')
+    printm(f'{getBateryState()}')
     printm(f'Size of display_data: {len(display_data)}')
     if touch_1.value:
         # Turn off the LED
