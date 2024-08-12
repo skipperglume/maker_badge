@@ -25,3 +25,8 @@ You should for something like: `/dev/ttyACM0`, with recent time of creation.
 
     scp code.py /media/lofu/CIRCUITPY/code.py
     scp qr.bmp /media/lofu/CIRCUITPY/
+
+
+### Important remark:
+
+For the board `rev.D` a pin `board.D16` is a powerconstroling pin to display. Without setting it to `LOW`/`False` e-paper display won't refresh.
