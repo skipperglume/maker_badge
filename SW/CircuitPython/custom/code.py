@@ -11,8 +11,13 @@ import analogio
 from adafruit_display_text import label
 import gc
 import digitalio
-# TODO: test this library
-# import os
+
+
+import os
+import ssl
+import socketpool
+import wifi
+# import adafruit_minimqtt.adafruit_minimqtt as MQTT
 
 # Activating the eink's power supply and configuring its SPI bus
 # The transistor turns on the power supply by setting the GPIO16 pin to a low state 
@@ -110,6 +115,8 @@ def displayFigure():
     
     figure_palette = displayio.Palette(1) # 
     figure_palette[0] = display_white
+
+    # display.time_to_refresh - as a random parameter
 
     
     figure_map[0, 0] = 1
@@ -331,3 +338,7 @@ while True:
         time.sleep(0.5)
         pass
     time.sleep(0.5)
+
+    print(os.uname())
+    print(os.listdir('/'))
+    
