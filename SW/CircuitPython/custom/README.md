@@ -38,3 +38,10 @@ You should for something like: `/dev/ttyACM0`, with recent time of creation.
 ### Output of os.listdir('/'):
 
     ['.fseventsd', '.metadata_never_index', '.Trashes', 'settings.toml', 'lib', 'boot_out.txt', 'System Volume Information', 'code.py', 'logo.bmp', 'qr.bmp']
+    scp code.py /media/lofu/CIRCUITPY/code.py
+    scp qr.bmp /media/lofu/CIRCUITPY/
+
+
+### Important remarks:
+
+ 1. For the board `rev.D` a pin `board.D16` is a powerconstroling pin to display. Without setting it to `LOW`/`False` e-paper display won't refresh.
