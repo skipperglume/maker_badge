@@ -17,7 +17,7 @@ Or:
 
 You should for something like: `/dev/ttyACM0`, with recent time of creation.
 
-### Simple command to creat a serial reader: 
+### Simple command to create a serial reader: 
 
     grep --quiet --max-count=1 -F "foo" /dev/ttyUSB0
 
@@ -44,4 +44,4 @@ You should for something like: `/dev/ttyACM0`, with recent time of creation.
 
 ### Important remarks:
 
- 1. For the board `rev.D` a pin `board.D16` is a powerconstroling pin to display. Without setting it to `LOW`/`False` e-paper display won't refresh.
+ 1. For the board `rev.D` a pin `board.D16` is a power controlling pin to display. Without setting it to `LOW`/`False` e-paper display won't refresh.
