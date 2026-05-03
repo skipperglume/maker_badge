@@ -5,7 +5,10 @@ import os
 import wifi
 import socketpool
 import analogio
+import touchio
 
+
+TRANSIENT_SOCKET_ERRNOS = (11, 110, 116)
 
 enable_display = digitalio.DigitalInOut(board.D16)
 enable_display.direction = digitalio.Direction.OUTPUT
@@ -20,11 +23,25 @@ BATTERY_DIVIDER_COEFF = 2.0
 BATTERY_MIN_VOLTAGE = 3.2
 BATTERY_MAX_VOLTAGE = 4.2
 
+BUTTON_PINS = [board.D5, board.D4, board.D3, board.D2, board.D1]
+BUTTON_NAMES = ["BTN1", "BTN2", "BTN3", "BTN4", "BTN5"]
+TOUCH_THRESHOLD_SCALE = 1.35
+TOUCH_THRESHOLD_MIN_DELTA = 250
+
 # D14 enables the battery divider transistor: LOW enables, HIGH disables.
 battery_en = digitalio.DigitalInOut(board.D14)
 battery_en.direction = digitalio.Direction.OUTPUT
 battery_en.value = True
 battery_adc = analogio.AnalogIn(board.D6)
+buttons = [touchio.TouchIn(pin) for pin in BUTTON_PINS]
+
+# Raise thresholds so accidental/light touches do not trigger as easily.
+for button in buttons:
+  baseline = getattr(button, "raw_value", 0)
+  current_threshold = getattr(button, "threshold", baseline)
+  scaled_threshold = int(current_threshold * TOUCH_THRESHOLD_SCALE)
+  min_from_baseline = int(baseline + TOUCH_THRESHOLD_MIN_DELTA)
+  button.threshold = max(scaled_threshold, min_from_baseline)
 
 
 def read_battery_state():
@@ -52,9 +69,42 @@ def read_battery_state():
     }
 
 
-def build_html(state):
-    """Render a compact HTML page with battery telemetry."""
-    return """<!doctype html>
+def read_buttons_state():
+    """Return current pressed state and raw integer value for each touch button."""
+    states = []
+    for button in buttons:
+        states.append(
+            {
+                "pressed": bool(button.value),
+                "raw": int(getattr(button, "raw_value", 0)),
+            }
+        )
+    return states
+
+
+def build_button_rows(button_states):
+    """Return HTML rows for touch button state and raw values."""
+    html = ""
+    for index, state in enumerate(button_states):
+        pressed = state["pressed"]
+        raw = state["raw"]
+        state_label = "PRESSED" if pressed else "RELEASED"
+        square_class = "square-on" if pressed else "square-off"
+        html += (
+            '<div class="btn-row"><span>{}</span><span class="btn-state"><span class="square {}"></span>{} ({})</span></div>\n'.format(
+                BUTTON_NAMES[index], square_class, state_label, raw
+            )
+        )
+    return html
+
+
+
+
+
+def build_html(state, button_states):
+    """Render a compact HTML page with battery telemetry and button state."""
+    button_rows_html = build_button_rows(button_states)
+    page = """<!doctype html>
 <html lang=\"en\">
 <head>
   <meta charset=\"utf-8\" />
@@ -107,6 +157,42 @@ def build_html(state):
       border-top: 1px dashed #d8dfcc;
       font-size: 0.95rem;
     }}
+    .section-title {{
+      margin: 14px 0 4px 0;
+      font-size: 0.95rem;
+      color: var(--muted);
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }}
+    .btn-row {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 6px 0;
+      border-top: 1px dashed #d8dfcc;
+      font-size: 0.95rem;
+    }}
+    .btn-state {{
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+    }}
+    .square {{
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      border: 1px solid rgba(0, 0, 0, 0.2);
+      display: inline-block;
+    }}
+    .square-on {{
+      background: #1c8b5f;
+    }}
+    .square-off {{
+      background: #c83f3f;
+    }}
     .muted {{
       color: var(--muted);
       font-size: 0.85rem;
@@ -121,6 +207,8 @@ def build_html(state):
     <div class=\"row\"><span>Battery voltage</span><strong>{voltage:.3f} V</strong></div>
     <div class=\"row\"><span>ADC voltage</span><strong>{adc:.3f} V</strong></div>
     <div class=\"row\"><span>Raw ADC</span><strong>{raw}</strong></div>
+    <p class=\"section-title\">Touch Buttons</p>
+    {button_rows}
     <p class=\"muted\">Auto-refresh every 5 s.</p>
   </main>
 </body>
@@ -130,8 +218,9 @@ def build_html(state):
         voltage=state["battery_voltage"],
         adc=state["adc_voltage"],
         raw=state["raw"],
+        button_rows=button_rows_html,
     )
-
+    return page
 
 def send_http_response(client, body):
     payload = body.encode("utf-8")
@@ -146,8 +235,29 @@ def send_http_response(client, body):
 
     packet = headers + payload
     sent = 0
+    retries = 0
     while sent < len(packet):
-        sent += client.send(packet[sent:])
+        try:
+            sent_now = client.send(packet[sent:])
+        except OSError as exc:
+            err = exc.args[0] if exc.args else None
+            if err in TRANSIENT_SOCKET_ERRNOS and retries < 20:
+                retries += 1
+                time.sleep(0.01)
+                continue
+            raise
+
+        if sent_now is None:
+            sent_now = 0
+        if sent_now <= 0:
+            if retries < 20:
+                retries += 1
+                time.sleep(0.01)
+                continue
+            raise RuntimeError("Socket send stalled before full response was transmitted")
+
+        sent += sent_now
+        retries = 0
 
 
 def read_http_request(client):
@@ -155,11 +265,19 @@ def read_http_request(client):
     # Some CircuitPython socket implementations do not provide recv(),
     # but they do provide recv_into().
     buf = bytearray(1024)
-    if hasattr(client, "recv_into"):
-      return client.recv_into(buf)
-    if hasattr(client, "recv"):
-      data = client.recv(1024)
-      return len(data) if data else 0
+    try:
+        if hasattr(client, "recv_into"):
+            return client.recv_into(buf)
+        if hasattr(client, "recv"):
+            data = client.recv(1024)
+            return len(data) if data else 0
+    except OSError as exc:
+        # EAGAIN / timeout can happen on non-blocking socket reads.
+        # Treat this as an empty request and continue serving a response.
+        err = exc.args[0] if exc.args else None
+        if err in TRANSIENT_SOCKET_ERRNOS:
+            return 0
+        raise
     return 0
 
 def connect_wifi():
@@ -190,15 +308,21 @@ def run_server():
     print("HTTP server running on http://{}/".format(wifi.radio.ipv4_address))
 
     while True:
-        client, address = server.accept()
+        # 
+        client, address = server.accept() # Wait for a client to connect
+
+
+        print(f"Client connected: {address}")
+
         try:
-            print("Client:", address)
+            print(f"Client: [{address}]" )
             if hasattr(client, "settimeout"):
-                client.settimeout(1)
+                client.settimeout(3)
                 _ = read_http_request(client)
 
             state = read_battery_state()
-            page = build_html(state)
+            button_states = read_buttons_state()
+            page = build_html(state, button_states)
             send_http_response(client, page)
         except Exception as exc:
             print("Request error:", exc)
@@ -208,7 +332,7 @@ def run_server():
             except Exception:
                 pass
 
-        time.sleep(0.05)
+        time.sleep(0.01)
 
 
 run_server()
