@@ -6,6 +6,10 @@ import wifi
 import socketpool
 import analogio
 import touchio
+import displayio
+import terminalio
+import adafruit_ssd1680
+from adafruit_display_text import label
 
 
 TRANSIENT_SOCKET_ERRNOS = (11, 110, 116)
@@ -42,6 +46,55 @@ for button in buttons:
   scaled_threshold = int(current_threshold * TOUCH_THRESHOLD_SCALE)
   min_from_baseline = int(baseline + TOUCH_THRESHOLD_MIN_DELTA)
   button.threshold = max(scaled_threshold, min_from_baseline)
+
+# ePaper display constants
+DISPLAY_BLACK = 0x000000
+DISPLAY_WHITE = 0xFFFFFF
+DISPLAY_WIDTH = 250
+DISPLAY_HEIGHT = 122
+
+# Initialize ePaper display hardware (same wiring as custom/code.py)
+_board_spi = board.SPI()
+_epd_cs = board.D41
+_epd_dc = board.D40
+_epd_reset = board.D39
+_epd_busy = board.D42
+
+displayio.release_displays()
+_display_bus = displayio.FourWire(
+    _board_spi, command=_epd_dc, chip_select=_epd_cs, reset=_epd_reset, baudrate=1000000
+)
+time.sleep(0.5)
+display = adafruit_ssd1680.SSD1680(
+    _display_bus,
+    width=DISPLAY_WIDTH,
+    height=DISPLAY_HEIGHT,
+    rotation=270,
+    busy_pin=_epd_busy,
+    seconds_per_frame=5,
+)
+
+# Shared display group and white background tile
+_display_data = displayio.Group()
+_display_bg_bitmap = displayio.Bitmap(DISPLAY_WIDTH, DISPLAY_HEIGHT, 1)
+_display_palette = displayio.Palette(1)
+_display_palette[0] = DISPLAY_WHITE
+_background = displayio.TileGrid(_display_bg_bitmap, pixel_shader=_display_palette)
+
+
+def _display_add_text(text, scale, color, x, y):
+    """Append a scaled text label to the shared display group."""
+    group = displayio.Group(scale=scale, x=x, y=y)
+    text_label = label.Label(terminalio.FONT, text=text, color=color)
+    group.append(text_label)
+    _display_data.append(group)
+
+
+def _display_clear():
+    """Clear all display group entries and restore the white background."""
+    while len(_display_data) > 0:
+        _display_data.pop()
+    _display_data.append(_background)
 
 
 def read_battery_state():
@@ -295,6 +348,31 @@ def connect_wifi():
     result = {'result': 'Connected', 'IP': str(wifi.radio.ipv4_address)}
 
 
+def show_client_on_display(address):
+    """Display connected client IP and port on the Maker Badge ePaper screen."""
+    try:
+        client_ip = str(address[0]) if isinstance(address, tuple) and len(address) > 0 else str(address)
+        client_port = str(address[1]) if isinstance(address, tuple) and len(address) > 1 else "-"
+
+        enable_display.value = False  # Power on (transistor active low)
+
+        # Wait for display to be ready if it is still refreshing
+        while display.time_to_refresh > 0:
+            time.sleep(0.1)
+
+        home_ip = str(wifi.radio.ipv4_address)
+
+        _display_clear()
+        _display_add_text(home_ip, 2, DISPLAY_BLACK, 10, 10)
+        _display_add_text(client_ip, 2, DISPLAY_BLACK, 10, 40)
+        _display_add_text("port " + client_port, 2, DISPLAY_BLACK, 10, 70)
+
+        display.show(_display_data)
+        display.refresh()
+    except Exception as exc:
+        print("Display update error:", exc)
+
+
 def run_server():
     method_name = 'run_server'
 
@@ -313,6 +391,7 @@ def run_server():
 
 
         print(f"Client connected: {address}")
+        show_client_on_display(address)
 
         try:
             print(f"Client: [{address}]" )
