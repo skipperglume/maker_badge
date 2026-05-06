@@ -6,10 +6,12 @@ import wifi
 import socketpool
 import analogio
 import touchio
+import neopixel
 import displayio
 import terminalio
 import adafruit_ssd1680
 from adafruit_display_text import label
+import gc
 
 
 TRANSIENT_SOCKET_ERRNOS = (11, 110, 116)
@@ -18,8 +20,15 @@ enable_display = digitalio.DigitalInOut(board.D16)
 enable_display.direction = digitalio.Direction.OUTPUT
 enable_display.value = False
 
-WIFI_SSID = "skipperglume"
-WIFI_PASSWORD = "shashasha"
+WIFI_SSID = os.getenv("CIRCUITPY_WIFI_SSID", "")
+WIFI_PASSWORD = os.getenv("CIRCUITPY_WIFI_PASSWORD", "")
+SERVER_PORT = 8080
+CLIENT_READ_TIMEOUT_S = 0.2
+DISPLAY_CLIENT_UPDATE_MIN_INTERVAL_S = 1.0
+HTTP_HEADER_CHUNK_SIZE = 128
+HTTP_BODY_CHUNK_SIZE = 128
+HTTP_SEND_MAX_RETRIES = 800
+HTTP_SEND_RETRY_DELAY_S = 0.005
 
 
 
@@ -32,6 +41,9 @@ BUTTON_NAMES = ["BTN1", "BTN2", "BTN3", "BTN4", "BTN5"]
 TOUCH_THRESHOLD_SCALE = 1.35
 TOUCH_THRESHOLD_MIN_DELTA = 250
 
+_last_client_display_ts = 0.0
+_last_client_display_key = ""
+
 # D14 enables the battery divider transistor: LOW enables, HIGH disables.
 battery_en = digitalio.DigitalInOut(board.D14)
 battery_en.direction = digitalio.Direction.OUTPUT
@@ -39,13 +51,27 @@ battery_en.value = True
 battery_adc = analogio.AnalogIn(board.D6)
 buttons = [touchio.TouchIn(pin) for pin in BUTTON_PINS]
 
+LED_PIN = board.D18
+LED_COUNT = 4
+LED_BRIGHTNESS = 0.1
+led_matrix = neopixel.NeoPixel(
+    LED_PIN, LED_COUNT, brightness=LED_BRIGHTNESS, auto_write=False
+)
+
 # Raise thresholds so accidental/light touches do not trigger as easily.
 for button in buttons:
-  baseline = getattr(button, "raw_value", 0)
-  current_threshold = getattr(button, "threshold", baseline)
-  scaled_threshold = int(current_threshold * TOUCH_THRESHOLD_SCALE)
-  min_from_baseline = int(baseline + TOUCH_THRESHOLD_MIN_DELTA)
-  button.threshold = max(scaled_threshold, min_from_baseline)
+    # baseline = getattr(button, "raw_value", 0)
+    # current_threshold = getattr(button, "threshold", baseline)
+    baseline = 11000
+    current_threshold = baseline
+    scaled_threshold = int(current_threshold * TOUCH_THRESHOLD_SCALE)
+    min_from_baseline = int(baseline + TOUCH_THRESHOLD_MIN_DELTA)
+    baseline
+    print(baseline)
+    print(current_threshold)
+    print(baseline)
+    print(min_from_baseline)
+    button.threshold = max(scaled_threshold, min_from_baseline)
 
 # ePaper display constants
 DISPLAY_BLACK = 0x000000
@@ -135,6 +161,39 @@ def read_buttons_state():
     return states
 
 
+def buttons_to_color(button_states):
+    """Map the active button combination to a unique RGB color.
+
+    Each of the 32 possible combinations gets a distinct hue on the
+    color wheel (full saturation, full brightness). No buttons pressed
+    returns black (0, 0, 0).
+    """
+    mask = 0
+    for index, state in enumerate(button_states):
+        if state["pressed"]:
+            mask |= 1 << index
+
+    if mask == 0:
+        return (0, 0, 0)
+
+    # Map 1-31 evenly across the full hue wheel (0.0 - 1.0)
+    hue = (mask - 1) / 31.0
+
+    # HSV -> RGB  (S=1, V=1)
+    h6 = hue * 6.0
+    i = int(h6) % 6
+    f = h6 - int(h6)
+    t = int(f * 255)
+    q = int((1.0 - f) * 255)
+    if i == 0: return (255, t, 0)
+    if i == 1: return (q, 255, 0)
+    if i == 2: return (0, 255, t)
+    if i == 3: return (0, q, 255)
+    if i == 4: return (t, 0, 255)
+    
+    return (255, 0, q)
+
+
 def build_button_rows(button_states):
     """Return HTML rows for touch button state and raw values."""
     html = ""
@@ -151,127 +210,30 @@ def build_button_rows(button_states):
     return html
 
 
+def update_led_matrix(button_states):
+    """Show the current button-combination color on all badge LEDs."""
+    mix_color = buttons_to_color(button_states)
+    led_matrix.fill(mix_color)
+    led_matrix.show()
+
+
 
 
 
 def build_html(state, button_states):
-    """Render a compact HTML page with battery telemetry and button state."""
+    """Render a lightweight HTML page with battery telemetry and button state."""
     button_rows_html = build_button_rows(button_states)
-    page = """<!doctype html>
-<html lang=\"en\">
-<head>
-  <meta charset=\"utf-8\" />
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-  <meta http-equiv=\"refresh\" content=\"5\" />
-  <title>Maker Badge Battery</title>
-  <style>
-    :root {{
-      --bg: #f5f7ef;
-      --panel: #ffffff;
-      --ink: #1e2c2d;
-      --muted: #53666a;
-      --good: #1c8b5f;
-    }}
-    body {{
-      margin: 0;
-      background: radial-gradient(circle at 20% 10%, #e4edd8, var(--bg));
-      font-family: "Verdana", "Trebuchet MS", sans-serif;
-      color: var(--ink);
-      min-height: 100vh;
-      display: grid;
-      place-items: center;
-      padding: 16px;
-    }}
-    .card {{
-      width: min(420px, 100%);
-      background: var(--panel);
-      border: 2px solid #d8dfcc;
-      border-radius: 14px;
-      padding: 18px;
-      box-shadow: 0 10px 24px rgba(30, 44, 45, 0.10);
-    }}
-    h1 {{
-      margin: 0 0 10px 0;
-      font-size: 1.2rem;
-      letter-spacing: 0.02em;
-    }}
-    .big {{
-      font-size: 2.4rem;
-      line-height: 1;
-      font-weight: 700;
-      color: var(--good);
-      margin: 2px 0 12px 0;
-    }}
-    .row {{
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 6px 0;
-      border-top: 1px dashed #d8dfcc;
-      font-size: 0.95rem;
-    }}
-    .section-title {{
-      margin: 14px 0 4px 0;
-      font-size: 0.95rem;
-      color: var(--muted);
-      letter-spacing: 0.02em;
-      text-transform: uppercase;
-    }}
-    .btn-row {{
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      padding: 6px 0;
-      border-top: 1px dashed #d8dfcc;
-      font-size: 0.95rem;
-    }}
-    .btn-state {{
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      font-weight: 700;
-      letter-spacing: 0.01em;
-    }}
-    .square {{
-      width: 12px;
-      height: 12px;
-      border-radius: 3px;
-      border: 1px solid rgba(0, 0, 0, 0.2);
-      display: inline-block;
-    }}
-    .square-on {{
-      background: #1c8b5f;
-    }}
-    .square-off {{
-      background: #c83f3f;
-    }}
-    .muted {{
-      color: var(--muted);
-      font-size: 0.85rem;
-      margin-top: 12px;
-    }}
-  </style>
-</head>
-<body>
-  <main class=\"card\">
-    <h1>Maker Badge Battery</h1>
-    <div class=\"big\">{percent}%</div>
-    <div class=\"row\"><span>Battery voltage</span><strong>{voltage:.3f} V</strong></div>
-    <div class=\"row\"><span>ADC voltage</span><strong>{adc:.3f} V</strong></div>
-    <div class=\"row\"><span>Raw ADC</span><strong>{raw}</strong></div>
-    <p class=\"section-title\">Touch Buttons</p>
-    {button_rows}
-    <p class=\"muted\">Auto-refresh every 5 s.</p>
-  </main>
-</body>
-</html>
-""".format(
+    r, g, b = buttons_to_color(button_states)
+    mix_color_hex = "#{:02X}{:02X}{:02X}".format(r, g, b)
+    mix_label = mix_color_hex if (r or g or b) else "none"
+    page = """<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta http-equiv=\"refresh\" content=\"5\"><title>Maker Badge</title><style>body{{font-family:Verdana,sans-serif;margin:0;padding:12px;background:#f5f7ef;color:#1e2c2d}}.card{{max-width:420px;margin:auto;background:#fff;border:1px solid #d8dfcc;border-radius:10px;padding:12px}}.big{{font-size:2rem;font-weight:700;color:#1c8b5f;margin:8px 0}}.row,.btn-row{{display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-top:1px dashed #d8dfcc}}.square{{width:10px;height:10px;border-radius:2px;display:inline-block;margin-right:6px}}.square-on{{background:#1c8b5f}}.square-off{{background:#c83f3f}}.sw{{width:14px;height:14px;border:1px solid #888;border-radius:3px;display:inline-block;vertical-align:middle;margin-right:6px}}.btn{{display:block;width:100%;margin-top:8px;padding:8px 10px;border:0;border-radius:8px;background:#1e2c2d;color:#fff;font-weight:700}}</style></head><body><main class=\"card\"><h2>Maker Badge Battery</h2><div class=\"big\">{percent}%</div><div class=\"row\"><span>Battery</span><strong>{voltage:.3f} V</strong></div><div class=\"row\"><span>ADC</span><strong>{adc:.3f} V</strong></div><div class=\"row\"><span>Raw</span><strong>{raw}</strong></div><div class=\"row\"><span>Mix</span><strong><span class=\"sw\" style=\"background:{mix_color}\"></span>{mix_label}</strong></div>{button_rows}<button class=\"btn\" type=\"button\" onclick=\"location.reload()\">Refresh</button></main></body></html>""".format(
         percent=state["battery_percent"],
         voltage=state["battery_voltage"],
         adc=state["adc_voltage"],
         raw=state["raw"],
         button_rows=button_rows_html,
+        mix_color=mix_color_hex,
+        mix_label=mix_label,
     )
     return page
 
@@ -286,31 +248,43 @@ def send_http_response(client, body):
         "\r\n"
     ).format(len(payload)).encode("utf-8")
 
-    packet = headers + payload
-    sent = 0
-    retries = 0
-    while sent < len(packet):
-        try:
-            sent_now = client.send(packet[sent:])
-        except OSError as exc:
-            err = exc.args[0] if exc.args else None
-            if err in TRANSIENT_SOCKET_ERRNOS and retries < 20:
-                retries += 1
-                time.sleep(0.01)
-                continue
-            raise
-
-        if sent_now is None:
-            sent_now = 0
-        if sent_now <= 0:
-            if retries < 20:
-                retries += 1
-                time.sleep(0.01)
-                continue
-            raise RuntimeError("Socket send stalled before full response was transmitted")
-
-        sent += sent_now
+    def _send_with_retry(data, chunk_size, max_retries):
+        sent = 0
         retries = 0
+        while sent < len(data):
+            end = sent + chunk_size
+            view = memoryview(data)[sent:end]
+            try:
+                sent_now = client.send(view)
+            except OSError as exc:
+                err = exc.args[0] if exc.args else None
+                if err in TRANSIENT_SOCKET_ERRNOS and retries < max_retries:
+                    retries += 1
+                    time.sleep(HTTP_SEND_RETRY_DELAY_S)
+                    continue
+                return False
+
+            if sent_now is None:
+                sent_now = 0
+
+            if sent_now <= 0:
+                if retries < max_retries:
+                    retries += 1
+                    time.sleep(HTTP_SEND_RETRY_DELAY_S)
+                    continue
+                return False
+
+            sent += sent_now
+            retries = 0
+            # Give Wi-Fi stack a brief chance to drain buffers on tiny devices.
+            time.sleep(0.001)
+        return True
+
+    if not _send_with_retry(headers, HTTP_HEADER_CHUNK_SIZE, HTTP_SEND_MAX_RETRIES):
+        return False
+    if not _send_with_retry(payload, HTTP_BODY_CHUNK_SIZE, HTTP_SEND_MAX_RETRIES):
+        return False
+    return True
 
 
 def read_http_request(client):
@@ -334,10 +308,9 @@ def read_http_request(client):
     return 0
 
 def connect_wifi():
-    if WIFI_SSID == "YOUR_WIFI_SSID" or WIFI_PASSWORD == "YOUR_WIFI_PASSWORD":
+    if not WIFI_SSID or not WIFI_PASSWORD:
         raise RuntimeError(
-            "Set CIRCUITPY_WIFI_SSID/CIRCUITPY_WIFI_PASSWORD in settings.toml "
-            "or edit WIFI_SSID/WIFI_PASSWORD in code_wifi.py"
+            "Set CIRCUITPY_WIFI_SSID and CIRCUITPY_WIFI_PASSWORD in /CIRCUITPY/settings.toml"
         )
 
     print("Connecting to Wi-Fi...")
@@ -348,17 +321,45 @@ def connect_wifi():
     result = {'result': 'Connected', 'IP': str(wifi.radio.ipv4_address)}
 
 
+def show_connecting_on_display(ssid):
+    """Display the network name the badge is trying to connect to."""
+    try:
+        enable_display.value = False  # Power on (transistor active low)
+
+        while display.time_to_refresh > 0:
+            time.sleep(0.1)
+
+        ip_text = str(wifi.radio.ipv4_address) if wifi.radio.ipv4_address else "0.0.0.0"
+        url_text = "{}:{}".format(ip_text, SERVER_PORT)
+
+        _display_clear()
+        _display_add_text("Connecting to:", 2, DISPLAY_BLACK, 10, 10)
+        _display_add_text(ssid, 2, DISPLAY_BLACK, 10, 35)
+        _display_add_text(url_text, 2, DISPLAY_BLACK, 10, 70)
+
+        display.show(_display_data)
+        display.refresh()
+    except Exception as exc:
+        print("Display update error:", exc)
+
+
 def show_client_on_display(address):
     """Display connected client IP and port on the Maker Badge ePaper screen."""
+    global _last_client_display_ts, _last_client_display_key
     try:
         client_ip = str(address[0]) if isinstance(address, tuple) and len(address) > 0 else str(address)
         client_port = str(address[1]) if isinstance(address, tuple) and len(address) > 1 else "-"
+        display_key = client_ip + ":" + client_port
+
+        now = time.monotonic()
+        if display_key == _last_client_display_key and (now - _last_client_display_ts) < DISPLAY_CLIENT_UPDATE_MIN_INTERVAL_S:
+            return
+
+        if display.time_to_refresh > 0:
+            # Do not block request handling while ePaper is refreshing.
+            return
 
         enable_display.value = False  # Power on (transistor active low)
-
-        # Wait for display to be ready if it is still refreshing
-        while display.time_to_refresh > 0:
-            time.sleep(0.1)
 
         home_ip = str(wifi.radio.ipv4_address)
 
@@ -369,47 +370,85 @@ def show_client_on_display(address):
 
         display.show(_display_data)
         display.refresh()
+        _last_client_display_ts = now
+        _last_client_display_key = display_key
     except Exception as exc:
         print("Display update error:", exc)
 
 
 def run_server():
+
     method_name = 'run_server'
 
+    show_connecting_on_display(WIFI_SSID)
+    time.sleep(0.02)
     connect_wifi()
+
+
 
     pool = socketpool.SocketPool(wifi.radio)
     server = pool.socket(pool.AF_INET, pool.SOCK_STREAM)
-    server.bind(("0.0.0.0", 80))
+    server.bind(("0.0.0.0", SERVER_PORT))
     server.listen(1)
 
-    print("HTTP server running on http://{}/".format(wifi.radio.ipv4_address))
+    print(f"[{method_name}] HTTP server running on http://{wifi.radio.ipv4_address}:{SERVER_PORT}/")
 
     while True:
+        gc.collect()
         # 
         client, address = server.accept() # Wait for a client to connect
 
 
-        print(f"Client connected: {address}")
+        print(f"[{method_name}] Client connected: {address}")
         show_client_on_display(address)
 
         try:
-            print(f"Client: [{address}]" )
+            t_read_ms = 0.0
+            print(f"[{method_name}] Client: [{address}]" )
             if hasattr(client, "settimeout"):
-                client.settimeout(3)
+                client.settimeout(CLIENT_READ_TIMEOUT_S)
+                t_read_start = time.monotonic()
                 _ = read_http_request(client)
+                t_read_ms = (time.monotonic() - t_read_start) * 1000.0
+                print(f"[{method_name}] read_request_ms={t_read_ms:.1f}")
 
             state = read_battery_state()
             button_states = read_buttons_state()
-            page = build_html(state, button_states)
-            send_http_response(client, page)
+            update_led_matrix(button_states)
+
+            t_build_start = time.monotonic()
+            try:
+                page = build_html(state, button_states)
+            except MemoryError:
+                gc.collect()
+                page = "<!doctype html><html><body><h3>Low memory</h3><p>Retry in a moment.</p></body></html>"
+            t_build_ms = (time.monotonic() - t_build_start) * 1000.0
+            print("build_html_ms={:.1f}  page_bytes={}".format(t_build_ms, len(page)))
+
+            if hasattr(client, "settimeout"):
+                client.settimeout(None)  # switch to blocking mode before send
+            t_send_start = time.monotonic()
+            response_ok = send_http_response(client, page)
+            t_send_ms = (time.monotonic() - t_send_start) * 1000.0
+            print("send_response_ms={:.1f}".format(t_send_ms))
+            if not response_ok:
+                print("send_response_status=partial")
+            else:
+                print("send_response_status=ok")
+
+            print("total_request_ms={:.1f}".format(t_read_ms + t_build_ms + t_send_ms))
         except Exception as exc:
-            print("Request error:", exc)
+            err = exc.args[0] if hasattr(exc, "args") and exc.args else None
+            if err in TRANSIENT_SOCKET_ERRNOS:
+                print("Transient socket backpressure; request dropped")
+            else:
+                print("Request error:", exc)
         finally:
             try:
                 client.close()
             except Exception:
                 pass
+            gc.collect()
 
         time.sleep(0.01)
 
